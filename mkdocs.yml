@@ -1,0 +1,42 @@
+---
+site_name: sso-mock-poc
+site_url: https://sso-mock-poc.readthedocs.io/
+site_author: Matthew Martin <matthewdeanmartin@gmail.com>
+site_description: A local mock OIDC/SSO server that lets Angular + Spring Boot run
+  unattended API and load tests without an interactive SSO provider
+repo_url: https://github.com/matthewdeanmartin/sso-mock-poc
+theme:
+  name: readthedocs
+  features: [navigation.footer]
+edit_uri: edit/main/docs/
+markdown_extensions:
+  - attr_list
+  - codehilite
+  - toc:
+      permalink: true
+nav:
+  - Home: index.md
+  - Overview:
+      - What It Is: overview/README.md
+      - How It Works: overview/how-it-works.md
+  - Installation: installation.md
+  - Usage:
+      - Quick Start: usage/quickstart.md
+      - The Unattended Proof (Gatling): usage/gatling.md
+      - Browser Demo (Angular): usage/angular.md
+      - Docker: usage/docker.md
+  - Reference:
+      - Mock IdP Endpoints: reference/mock-idp.md
+      - Spring API Endpoints: reference/spring-api.md
+      - Configuration: reference/configuration.md
+      - What Is and Isn't Mocked: reference/coverage.md
+  - Troubleshooting: troubleshooting.md
+validation:
+  nav:
+    omitted_files: warn
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+plugins:
+  - search

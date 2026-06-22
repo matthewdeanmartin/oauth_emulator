@@ -1,0 +1,25 @@
+server:
+  port: 8080
+
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Validate signature + issuer against the mock IdP's discovery doc.
+          # Override with SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI
+          # when issuer/host differs (e.g. inside Docker).
+          issuer-uri: http://localhost:9000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    org.springframework.security: INFO

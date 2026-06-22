@@ -1,0 +1,14 @@
+{
+  "name": "sso-mock-poc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PoC: swap real SSO for a mock OIDC server and still run unattended API/load tests",
+  "scripts": {
+    "mock-idp": "npm --prefix mock-idp run dev",
+    "spring": "mvn -f spring-demo/pom.xml spring-boot:run",
+    "gatling": "mvn -f gatling/pom.xml -B gatling:test -Dgatling.simulationClass=com.example.ssopoc.SsoSimulation",
+    "angular": "npm --prefix angular-demo start",
+    "test:poc": "node scripts/test-poc.mjs",
+    "build": "npm --prefix mock-idp install && mvn -f spring-demo/pom.xml -q -DskipTests package"
+  }
+}

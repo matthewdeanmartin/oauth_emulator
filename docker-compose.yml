@@ -1,0 +1,36 @@
+# Runs the mock IdP and the Spring resource server in containers.
+#
+# Issuer consistency note:
+#   A JWT's "iss" claim must equal the issuer in the discovery document, and
+#   Spring validates the token's issuer against its configured issuer-uri. To
+#   keep one issuer value working from both inside Docker and (optionally) the
+#   host, we pin the issuer to http://host.docker.internal:9000 and have Spring
+#   reach the mock IdP at that same host. On Docker Desktop (Win/Mac) this Just
+#   Works; on Linux the extra_hosts mapping below provides host.docker.internal.
+#
+# Gatling/Angular run from the host (see README). For host-run Gatling against
+# this compose stack, the issuer host (host.docker.internal) also resolves on
+# the host via your OS hosts file, OR simply run the stack locally (npm scripts)
+# which is the path the PoC's `npm run test:poc` uses.
+
+services:
+  mock-idp:
+    build: ./mock-idp
+    ports:
+      - "9000:9000"
+    environment:
+      PORT: "9000"
+      ISSUER: "http://host.docker.internal:9000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  spring-demo:
+    build: ./spring-demo
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mock-idp
+    environment:
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: "http://host.docker.internal:9000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
