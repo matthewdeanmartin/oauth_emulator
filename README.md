@@ -151,6 +151,19 @@ local `npm run test:poc` path.
   matrix (public, no-token 401, valid-token claims, admin 200, non-admin 403).
 - Gatling: the simulation asserts 0 failed requests.
 
+## Dependency security
+
+```bash
+make audit        # scan all deps for known CVEs (npm + Maven)
+make audit-npm    # just the Node projects
+make audit-java   # just the Maven projects (OWASP Dependency-Check)
+```
+
+A 2-day install **cooloff** for npm is set in the root `.npmrc`
+(`min-release-age=2`) — project-scoped, no global config. Maven has no local
+cooloff equivalent; see `docs/usage/security.md` for the repository-manager /
+Renovate approaches.
+
 ## Non-goals
 
 Not production SSO. No real IdP (Okta/Keycloak/Azure/Auth0), MFA, password

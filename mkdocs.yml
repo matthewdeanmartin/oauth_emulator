@@ -25,6 +25,7 @@ nav:
       - The Unattended Proof (Gatling): usage/gatling.md
       - Browser Demo (Angular): usage/angular.md
       - Docker: usage/docker.md
+      - Dependency Security: usage/security.md
   - Reference:
       - Mock IdP Endpoints: reference/mock-idp.md
       - Spring API Endpoints: reference/spring-api.md

@@ -55,6 +55,7 @@ checks, runs the Gatling simulation (sign in → get JWT → call `/public`,
 - **[The Unattended Proof (Gatling)](usage/gatling.md)** — the simulation and load profiles.
 - **[Browser Demo (Angular)](usage/angular.md)** — the interactive login flow.
 - **[Docker](usage/docker.md)** — running the stack in containers, and the issuer caveat.
+- **[Dependency Security](usage/security.md)** — vulnerability scanning and the install cooloff policy.
 - **[Mock IdP Endpoints](reference/mock-idp.md)** / **[Spring API Endpoints](reference/spring-api.md)**.
 - **[Configuration](reference/configuration.md)** — every knob and env var.
 - **[What Is and Isn't Mocked](reference/coverage.md)** — scope and non-goals.
