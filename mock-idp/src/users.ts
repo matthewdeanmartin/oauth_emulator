@@ -8,6 +8,11 @@ export interface MockUser {
   email: string;
   name: string;
   groups: string[];
+  // Runtime governance state, mutated by the /admin endpoints to emulate
+  // some oauth server deprovisioning event ("this user was fired") happening
+  // AFTER a JWT was already minted. The token stays cryptographically valid and
+  // unexpired, but a call-home to /userinfo or /introspect reflects this flag.
+  revoked?: boolean;
 }
 
 export const USERS: Record<string, MockUser> = {

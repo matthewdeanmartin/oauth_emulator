@@ -16,13 +16,27 @@
 //   GET  /oauth/authorize                    fake interactive login page (browser)
 //   POST /oauth/token                        OIDC-ish token endpoint (auth code)
 //   POST /login                              unattended: mint a JWT for a user
+//   GET  /userinfo                           OIDC call-home: current claims / 401
+//   POST /introspect                         RFC 7662 call-home: {active, claims}
+//   POST /admin/revoke|restore|set-groups    flip a user's governance state
 //
 // The /login endpoint is the one Gatling uses: no human, no redirects.
+//
+// Why /userinfo + /introspect exist:
+//   A JWT is a *snapshot* taken when the user signed in. Some apps re-check the
+//   identity source mid-session ("has this user been fired or lost their role in
+//   the last 5 minutes?") because the token, though still unexpired and
+//   signature-valid, may be stale. That authoritative source is typically an IGA
+//   system like some oauth server. This mock stands in for it: the app is
+//   configured with a userinfo URL and/or an introspection URL, points them at
+//   these endpoints, and the /admin/* endpoints let a test flip a user to
+//   "revoked" so the call-home starts rejecting an otherwise-valid token.
 
 import express, { Request, Response } from "express";
 import {
   exportJWK,
   generateKeyPair,
+  jwtVerify,
   SignJWT,
   JWK,
   KeyLike,
@@ -40,6 +54,7 @@ const TOKEN_TTL_SECONDS = 3600;
 // which is all the PoC needs. JWKS exposes only the public half.
 // ---------------------------------------------------------------------------
 let privateKey: KeyLike;
+let publicKey: KeyLike; // kept for local token verification (userinfo/introspect)
 let publicJwk: JWK;
 
 async function initKeys(): Promise<void> {
@@ -47,12 +62,25 @@ async function initKeys(): Promise<void> {
     extractable: true,
   });
   privateKey = priv;
+  publicKey = pub;
   publicJwk = {
     ...(await exportJWK(pub)),
     kid: KEY_ID,
     use: "sig",
     alg: "RS256",
   };
+}
+
+/**
+ * Verifies a token this mock issued (signature + issuer + expiry) and returns
+ * its claims. Throws if the token is malformed, tampered, wrong-issuer, or
+ * expired. Note: this checks the CRYPTOGRAPHIC validity only — it says nothing
+ * about whether the user has since been revoked. That governance check is
+ * layered on top by the callers (userinfo/introspect) via the `revoked` flag.
+ */
+async function verifyToken(token: string): Promise<Record<string, unknown>> {
+  const { payload } = await jwtVerify(token, publicKey, { issuer: ISSUER });
+  return payload as Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +170,8 @@ app.get("/.well-known/openid-configuration", (_req: Request, res: Response) => {
     authorization_endpoint: `${ISSUER}/oauth/authorize`,
     token_endpoint: `${ISSUER}/oauth/token`,
     jwks_uri: `${ISSUER}/.well-known/jwks.json`,
+    userinfo_endpoint: `${ISSUER}/userinfo`,
+    introspection_endpoint: `${ISSUER}/introspect`,
     response_types_supported: ["code"],
     subject_types_supported: ["public"],
     id_token_signing_alg_values_supported: ["RS256"],
@@ -230,6 +260,154 @@ app.post("/oauth/token", async (req: Request, res: Response) => {
   });
 });
 
+// --- Call-home: OIDC UserInfo ---------------------------------------------
+// GET /userinfo  (Authorization: Bearer <access_token>)
+//
+// The app calls this mid-session to re-check the user against the live identity
+// source. Returns the user's CURRENT claims. If the token is invalid/expired ->
+// 401. If the user has since been revoked (fired) -> 401 with an error that
+// signals the session should end, even though the JWT itself is still valid.
+async function handleUserInfo(req: Request, res: Response): Promise<Response> {
+  const auth = req.header("authorization") ?? "";
+  const token = auth.toLowerCase().startsWith("bearer ")
+    ? auth.slice(7).trim()
+    : "";
+  if (!token) {
+    return res
+      .status(401)
+      .set("WWW-Authenticate", 'Bearer error="invalid_request"')
+      .json({ error: "invalid_request", error_description: "missing bearer token" });
+  }
+
+  let claims: Record<string, unknown>;
+  try {
+    claims = await verifyToken(token);
+  } catch (e) {
+    return res
+      .status(401)
+      .set("WWW-Authenticate", 'Bearer error="invalid_token"')
+      .json({ error: "invalid_token", error_description: (e as Error).message });
+  }
+
+  const username = String(claims.preferred_username ?? "");
+  const user = USERS[username];
+  // User deleted from the directory, or governance-revoked since the token was
+  // minted: the token is cryptographically fine but the session is no longer
+  // authorized. This is the "fired 5 minutes ago" case.
+  if (!user || user.revoked) {
+    return res
+      .status(401)
+      .set("WWW-Authenticate", 'Bearer error="invalid_token"')
+      .json({
+        error: "invalid_token",
+        error_description: "user is no longer active (revoked/deprovisioned)",
+      });
+  }
+
+  // Return CURRENT claims (groups may have changed since the token was minted).
+  return res.json({
+    sub: user.sub,
+    preferred_username: user.preferred_username,
+    email: user.email,
+    name: user.name,
+    groups: user.groups,
+  });
+}
+app.get("/userinfo", handleUserInfo);
+// PingFederate-style alias, in case the app is configured with that path.
+app.get("/idp/userinfo.openid", handleUserInfo);
+
+// --- Call-home: OAuth2 Token Introspection (RFC 7662) ----------------------
+// POST /introspect   token=<access_token>
+//
+// Confidential-client style call-home. Returns {active:true, ...current claims}
+// while the user is valid, or {active:false} once revoked/expired/invalid. Per
+// RFC 7662 an inactive or unverifiable token is reported as {active:false} with
+// HTTP 200 (not an error). Client auth is accepted but not enforced here — this
+// is a mock; see the note on client_secret in the README.
+async function handleIntrospect(req: Request, res: Response): Promise<Response> {
+  const token = String(req.body?.token ?? "");
+  if (!token) {
+    return res.status(400).json({ error: "invalid_request" });
+  }
+
+  let claims: Record<string, unknown>;
+  try {
+    claims = await verifyToken(token);
+  } catch {
+    return res.json({ active: false });
+  }
+
+  const username = String(claims.preferred_username ?? "");
+  const user = USERS[username];
+  if (!user || user.revoked) {
+    return res.json({ active: false });
+  }
+
+  return res.json({
+    active: true,
+    sub: user.sub,
+    username: user.preferred_username,
+    preferred_username: user.preferred_username,
+    email: user.email,
+    name: user.name,
+    groups: user.groups, // CURRENT groups — reflects any role change
+    scope: String(claims.scope ?? ""),
+    token_type: "Bearer",
+    exp: claims.exp,
+    iat: claims.iat,
+    iss: claims.iss,
+    aud: claims.aud,
+  });
+}
+app.post("/introspect", handleIntrospect);
+// PingFederate-style alias.
+app.post("/as/introspection.oauth2", handleIntrospect);
+
+// --- Admin: mutate governance state (emulate some oauth server changes) ---------
+// These have no auth on purpose: they are a test control surface for the mock,
+// standing in for "an admin deprovisioned this user in IdentityIQ".
+//
+//   POST /admin/revoke      { username }          -> user's call-homes fail
+//   POST /admin/restore     { username }          -> re-activate
+//   POST /admin/set-groups  { username, groups }  -> change roles mid-session
+function findUsername(req: Request): string {
+  return String(req.body?.username ?? req.query.username ?? "");
+}
+
+app.post("/admin/revoke", (req: Request, res: Response) => {
+  const username = findUsername(req);
+  const user = USERS[username];
+  if (!user) return res.status(404).json({ error: "unknown_user", username });
+  user.revoked = true;
+  console.log(`[admin] revoked ${username} (fired / deprovisioned)`);
+  return res.json({ username, revoked: true });
+});
+
+app.post("/admin/restore", (req: Request, res: Response) => {
+  const username = findUsername(req);
+  const user = USERS[username];
+  if (!user) return res.status(404).json({ error: "unknown_user", username });
+  user.revoked = false;
+  console.log(`[admin] restored ${username}`);
+  return res.json({ username, revoked: false });
+});
+
+app.post("/admin/set-groups", (req: Request, res: Response) => {
+  const username = findUsername(req);
+  const user = USERS[username];
+  if (!user) return res.status(404).json({ error: "unknown_user", username });
+  const groups = req.body?.groups;
+  if (!Array.isArray(groups) || !groups.every((g) => typeof g === "string")) {
+    return res
+      .status(400)
+      .json({ error: "invalid_groups", error_description: "groups must be a string array" });
+  }
+  user.groups = groups;
+  console.log(`[admin] set ${username} groups -> ${JSON.stringify(groups)}`);
+  return res.json({ username, groups });
+});
+
 // --- Health ---------------------------------------------------------------
 app.get("/health", (_req, res) => res.json({ status: "UP" }));
 
@@ -239,5 +417,8 @@ initKeys().then(() => {
     console.log(`  discovery: ${ISSUER}/.well-known/openid-configuration`);
     console.log(`  jwks:      ${ISSUER}/.well-known/jwks.json`);
     console.log(`  login:     POST ${ISSUER}/login  (unattended)`);
+    console.log(`  userinfo:  GET  ${ISSUER}/userinfo   (call-home)`);
+    console.log(`  introspect:POST ${ISSUER}/introspect (call-home)`);
+    console.log(`  admin:     POST ${ISSUER}/admin/{revoke,restore,set-groups}`);
   });
 });

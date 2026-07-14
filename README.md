@@ -59,6 +59,76 @@ npm run test:poc   # starts mock-idp + Spring, runs Gatling, tears down, exits 0
 
 Expected: `BUILD SUCCESS`, 4/4 requests OK, exit code 0.
 
+## Live online check (narrated demo)
+
+Want to *watch* a token get minted and validated online, instead of running the
+Gatling harness? Use:
+
+```bash
+npm run demo:online
+```
+
+It starts the mock IdP + Spring, then narrates each step to the terminal:
+
+1. `POST /login` to the mock IdP → mint a signed JWT (no password, no secret).
+2. Decode + print the JWT header and claims so you can read what's inside.
+3. `GET /api/me` with the bearer token → Spring validates it **offline** (see
+   below) and echoes the claims.
+4. `GET /api/admin` as `demo.user` (in `admin`) → 200.
+5. `GET /api/admin` as `plain.user` (not admin) → 403 (real claim rule).
+6. `GET /api/me` with no token → 401 (Spring Security is not disabled).
+7. **Call-home** to `GET /userinfo` and `POST /introspect` → confirm the user is
+   still active (200 / `active:true`).
+8. `POST /admin/revoke` → simulate the user being **fired / deprovisioned** in
+   some oauth servers. The JWT is *not* touched.
+9. Repeat the call-home with the **same unexpired JWT** → now rejected (`401` /
+   `active:false`).
+10. `GET /api/me` again → Spring **still returns 200**, because its offline check
+    can't see the revoke — which is exactly why the call-home exists.
+11. `POST /admin/set-groups` → strip a role mid-session; introspection reflects
+    the new groups live.
+
+Then it tears everything down. Set `DEMO_NO_START=1` to run the checks against
+services you already started in other terminals.
+
+### Two validation paths: offline JWT vs. online call-home
+
+This PoC deliberately shows **both** checks a real deployment uses, because they
+answer different questions:
+
+| Check | Who | How | Sees a revoke? |
+|-------|-----|-----|----------------|
+| **Offline JWT validation** | Spring resource server | Fetches discovery + JWKS **once**, then validates each token in-process (signature + issuer + expiry) | **No** — a valid, unexpired token always passes |
+| **Online call-home** | Your app, mid-session | Calls the IdP's `/userinfo` or `/introspect` to re-check live state | **Yes** — reflects revoke / role change immediately |
+
+The offline path is fast and self-contained, but a JWT is a *snapshot* from when
+the user signed in. If the token lives 5–60 minutes, the app may re-check the
+authoritative identity source ("has this user been fired or lost a role since?").
+That source is some oauth server; the mock's
+`/userinfo` + `/introspect` endpoints stand in for it, and `/admin/*` lets a test
+flip a user's state so you can watch a still-valid token get its access withdrawn.
+
+Because your app is *configured* with the two call-home URLs, the exact paths on
+the mock don't matter — point them at `/userinfo` and `/introspect`, or at the
+PingFederate-style aliases `/idp/userinfo.openid` and `/as/introspection.oauth2`
+which the mock also serves. Both are advertised in the discovery document
+(`userinfo_endpoint`, `introspection_endpoint`).
+
+### client_id / client_secret
+
+There is **no client secret** anywhere. The mock models a **public client**
+(discovery advertises `token_endpoint_auth_methods_supported: ["none"]`), the
+kind a browser SPA uses with `authorization_code` + PKCE:
+
+- `client_id` is only carried through the browser flow so the `id_token`'s
+  audience matches what the Angular OIDC library expects. It is never checked
+  against a client registry.
+- `client_secret` doesn't exist — there is no `client_credentials` grant and no
+  confidential client. The unattended `/login` endpoint needs no `client_id` at
+  all. `/introspect` (normally a confidential-client endpoint) *accepts* client
+  credentials but does not verify them — it's a mock. If your real app sends a
+  client_id/secret on the introspection call, the mock will simply ignore them.
+
 ## Mock IdP endpoints
 
 | Endpoint                                  | Purpose                                  |
@@ -68,6 +138,11 @@ Expected: `BUILD SUCCESS`, 4/4 requests OK, exit code 0.
 | `POST /login`                             | **Unattended**: mint a JWT for a user    |
 | `GET /oauth/authorize`                    | Fake no-password login page (browser)    |
 | `POST /oauth/token`                       | `authorization_code` exchange (browser)  |
+| `GET /userinfo`                           | **Call-home**: current claims, or 401 if revoked (alias `/idp/userinfo.openid`) |
+| `POST /introspect`                        | **Call-home**: RFC 7662 `{active, …}` (alias `/as/introspection.oauth2`) |
+| `POST /admin/revoke`                      | Test control: mark a user fired/deprovisioned |
+| `POST /admin/restore`                     | Test control: re-activate a user         |
+| `POST /admin/set-groups`                  | Test control: change a user's roles mid-session |
 
 Two canned users (no passwords): `demo.user` (in group `admin`) and
 `plain.user` (not admin — proves `/api/admin` returns 403).
@@ -77,7 +152,16 @@ Try it manually:
 ```bash
 npm run mock-idp        # in one terminal
 curl http://localhost:9000/.well-known/openid-configuration
-curl -X POST http://localhost:9000/login -d username=demo.user
+
+# Mint a token, then use it for the call-home checks:
+TOKEN=$(curl -s -X POST http://localhost:9000/login -d username=demo.user | jq -r .access_token)
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:9000/userinfo        # 200 + claims
+curl -s -X POST http://localhost:9000/introspect -d "token=$TOKEN"              # {active:true,…}
+
+# Fire the user, then re-run the call-home with the SAME token:
+curl -s -X POST http://localhost:9000/admin/revoke -d username=demo.user
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:9000/userinfo        # 401 now
+curl -s -X POST http://localhost:9000/introspect -d "token=$TOKEN"              # {active:false}
 ```
 
 ## Spring API endpoints

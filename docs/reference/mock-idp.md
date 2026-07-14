@@ -13,6 +13,11 @@ them directly.
 | POST   | `/login`                                | **Unattended** — mint a JWT for a user   |
 | GET    | `/oauth/authorize`                      | No-password login page (browser flow)    |
 | POST   | `/oauth/token`                          | `authorization_code` token exchange      |
+| GET    | `/userinfo`                             | **Call-home** — current claims / 401 (alias `/idp/userinfo.openid`) |
+| POST   | `/introspect`                           | **Call-home** — RFC 7662 `{active, …}` (alias `/as/introspection.oauth2`) |
+| POST   | `/admin/revoke`                         | Test control — mark a user fired         |
+| POST   | `/admin/restore`                        | Test control — re-activate a user        |
+| POST   | `/admin/set-groups`                     | Test control — change a user's roles     |
 | GET    | `/health`                               | Liveness check (`{"status":"UP"}`)       |
 
 ## `GET /.well-known/openid-configuration`
@@ -92,6 +97,62 @@ curl -X POST http://localhost:9000/oauth/token \
 
 See **[How It Works → Two tokens, two audiences](../overview/how-it-works.md#two-tokens-two-audiences)**
 for why the access token and ID token have different audiences.
+
+## Call-home endpoints (online recheck)
+
+A JWT is a snapshot from sign-in time. Some apps re-check the identity source
+mid-session ("has this user been fired or lost a role since the token was
+minted?") because a token can stay signature-valid and unexpired long after the
+user's access should have ended. That authoritative source is typically an IGA
+system such as **SailPoint IdentityIQ**; these two endpoints stand in for it.
+
+Both verify the presented token's signature + issuer + expiry first. On top of
+that, they consult the user's **current** governance state (mutable via the
+`/admin/*` endpoints), so a revoked user is rejected even with a valid token.
+
+### `GET /userinfo`  (alias `GET /idp/userinfo.openid`)
+
+OIDC UserInfo. Send the access token as a Bearer:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:9000/userinfo
+```
+
+- **200** with current claims (`sub`, `preferred_username`, `email`, `name`,
+  `groups`) while the user is active.
+- **401** (`WWW-Authenticate: Bearer`) if the token is invalid/expired, or the
+  user has been revoked/deprovisioned since it was minted.
+
+### `POST /introspect`  (alias `POST /as/introspection.oauth2`)
+
+OAuth2 Token Introspection (RFC 7662):
+
+```bash
+curl -X POST http://localhost:9000/introspect -d "token=<token>"
+```
+
+- Active user → `{ "active": true, "sub": …, "groups": [ … current roles … ], … }`.
+- Revoked user, or invalid/expired token → `{ "active": false }` (HTTP 200, per
+  RFC 7662).
+
+Client credentials are *accepted but not enforced* — this is a mock. See the
+README's client_id/client_secret note.
+
+## Admin endpoints (test control surface)
+
+These emulate an administrator changing a user's state in the IGA system. They
+have **no authentication on purpose** — they are a test hook, not a real API.
+
+| Endpoint | Body | Effect |
+|----------|------|--------|
+| `POST /admin/revoke` | `{ "username": "demo.user" }` | Call-homes for this user now fail (fired) |
+| `POST /admin/restore` | `{ "username": "demo.user" }` | Re-activate the user |
+| `POST /admin/set-groups` | `{ "username": "demo.user", "groups": ["demo-users"] }` | Replace the user's roles mid-session |
+
+Unknown user → `404`. State is in-memory and resets when the mock restarts.
+Note these change what the **call-home** returns; they do **not** change or
+invalidate already-issued JWTs, so Spring's offline validation of an existing
+token is unaffected — which is precisely why the call-home is needed.
 
 ## Canned users
 

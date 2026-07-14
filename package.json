@@ -9,6 +9,7 @@
     "gatling": "mvn -f gatling/pom.xml -B gatling:test -Dgatling.simulationClass=com.example.ssopoc.SsoSimulation",
     "angular": "npm --prefix angular-demo start",
     "test:poc": "node scripts/test-poc.mjs",
+    "demo:online": "node scripts/demo-online-check.mjs",
     "build": "npm --prefix mock-idp install && mvn -f spring-demo/pom.xml -q -DskipTests package"
   }
 }
